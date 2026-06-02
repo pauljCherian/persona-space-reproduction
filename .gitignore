@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Generated figure outputs — re-created by `make figures`.
+# The canonical reference copies live in figures/reference/ (committed).
+/figures/figure_*.png
+/figures/*_flow.png
+/figures/main_result_box.png
+/figures/*.svg
+
+# From-scratch regeneration outputs (large GPU artifacts; not committed).
+/data_regen/
+/figures_regen/
+
+# Logs
+*.log
+logs/

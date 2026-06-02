@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>persona-space — poster figures</title>
+<style>
+  :root { --fg:#1f2933; --muted:#5d6b78; --line:#e1e7ec; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", sans-serif;
+         color: var(--fg); margin: 0; background: #f7f9fb; }
+  header { padding: 22px 28px; background: #fff; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13.5px; }
+  main { padding: 20px 28px 60px; max-width: 1400px; margin: 0 auto; }
+  .fig { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin:18px 0; }
+  .fig h2 { font-size: 16px; margin: 0 0 3px; }
+  .claim { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .fig img { width: 100%; height: auto; border:1px solid var(--line); border-radius:6px; background:#fff; cursor: zoom-in; }
+</style>
+</head>
+<body>
+<header>
+  <h1>persona-space — active poster figures</h1>
+  <p>The six figures currently in use. Click any image for full size.</p>
+</header>
+<main>
+
+  <div class="fig">
+    <h2>1 · Assistant-axis pipeline + Llama-3.1-8B persona space (PC1×PC2)</h2>
+    <p class="claim">Left: how persona space is built (run ≈275 character roles → mean mid-layer activation → PCA; PC1 = the Assistant Axis). Right: the resulting Llama-3.1-8B persona space — the default assistant (★) sits at the high-PC1 pole, with the teal "better-assistant" roles (analyst/consultant/planner/researcher/strategist/evaluator) just beyond it.</p>
+    <a href="assistant_axis_combined.png" target="_blank"><img src="assistant_axis_combined.png"></a>
+  </div>
+
+  <div class="fig">
+    <h2>2 · Steering diagram</h2>
+    <p class="claim">Building a trait (evil) steering vector from +trait/−trait persona activations, and adding it to the residual stream at generation time to steer behavior.</p>
+    <a href="steering_flow.png" target="_blank"><img src="steering_flow.png"></a>
+  </div>
+
+  <div class="fig">
+    <h2>3 · Abliteration diagram</h2>
+    <p class="claim">Finding the single refusal direction via difference-in-means and orthogonalizing it out of the write matrices, with the before/after behavioral effect.</p>
+    <a href="abliteration_flow.png" target="_blank"><img src="abliteration_flow.png"></a>
+  </div>
+
+  <div class="fig">
+    <h2>4 · Steering ejection (Fig 3)</h2>
+    <p class="claim">Activation steering along trait vectors ejects the default assistant through persona space; distinct traits move in distinguishable directions.</p>
+    <a href="figure_3_steering_trajectory.png" target="_blank"><img src="figure_3_steering_trajectory.png"></a>
+  </div>
+
+  <div class="fig">
+    <h2>5 · Evil-abliteration structure movement (2×2: k=2,4,8,12)</h2>
+    <p class="claim">Evil-coded roles, re-centered by their shared shift (normalized) so arrows show only the structural residual. Mean residual rises then saturates: 0.26 → 0.50 → 0.65 → 0.68 (35% → 91% of cloud spread).</p>
+    <a href="evil_structure_only.png" target="_blank"><img src="evil_structure_only.png"></a>
+  </div>
+
+  <div class="fig">
+    <h2>6 · Demon rollout — "most beautiful thing" (4×14)</h2>
+    <p class="claim">Demon answering at baseline / evil-abl k=3 / k=8: abyss of chaos → a beautiful lie → a sunset.</p>
+    <a href="beauty_panel.png" target="_blank"><img src="beauty_panel.png"></a>
+  </div>
+
+</main>
+</body>
+</html>
