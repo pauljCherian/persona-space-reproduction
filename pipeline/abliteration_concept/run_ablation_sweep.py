@@ -1,28 +1,14 @@
 #!/usr/bin/env python3
-"""Concept-abliteration sweep: does persona space survive removing a concept subspace?
+# We  abliterate a concept subspace (from build_directions.py) and then measure where the concept's coded roles
+# + the default assistant land in the EXISTING 275-role PCA basis. A
 
-For each concept (evil / humor / mysticism) we project out the top-k columns of its
-concept subspace (from build_directions.py) and measure where the concept's coded roles
-+ the default assistant land in the EXISTING 275-role PCA basis. A matched random
-subspace (same k) is the scale reference.
-
-Method (cheap, no 275-role re-run, no weight surgery):
-  1. Generate the subset probes ONCE with the unmodified model (coded roles + default).
-  2. For each condition, re-extract the SAME fixed conversations under an
-     assistant_axis.ActivationSteering(intervention_type="ablation", coeff=0) hook over
-     the top-k subspace columns -> mean over assistant-turn tokens at layer 16
-     (identical convention to the baseline cloud) -> project into the basis.
-  Displacement of a role = || pos(baseline) - pos(ablated) || in the PC1xPC2 plane.
-
-Inference-time directional ablation (h <- h - QQ^T h at the hooked layers) is the
-per-token equivalent of Arditi weight-orthogonalisation; fixing the text isolates the
-representational effect of the removal.
-
-Output:  data/abliteration_concept/runs/<run_name>/positions.csv  (+ meta.json)
-           columns: condition, family, k, role, group, pc1, pc2
-Usage:   CUDA_VISIBLE_DEVICES=4 python run_ablation_sweep.py [--n_questions 8]
-             [--n_system_prompts 2] [--layers 16|all] [--max_roles 0] [--run_name sweep]
-"""
+# Pipeline
+# 1. Generate the subset probes ONCE with the unmodified model (coded roles + default).
+# 2. For each condition, re-extract the SAME fixed conversations using ActivationSteering (ablation)
+# over each of the collumns in our subspace
+# 3. THen check the baseline position vs abliterated position as projceted onto the pc1 x pc2 plane
+# Usage:   CUDA_VISIBLE_DEVICES=4 python run_ablation_sweep.py [--n_questions 8]
+            # [--n_system_prompts 2] [--layers 16|all] [--max_roles 0] [--run_name sweep]
 from __future__ import annotations
 
 import argparse
@@ -55,6 +41,7 @@ DIR_DIR = ROOT / "data" / "abliteration_concept" / "directions"
 BASIS_FILE = ROOT / "data" / "steering" / "pca_basis" / "llama8b_basis.pt"
 RUNS_DIR = ROOT / "data" / "abliteration_concept" / "runs"
 
+# pick the roles that we want to track for movement
 CONCEPTS = ["evil", "humor", "mysticism"]
 CODED_ROLES = {
     "evil":      ["demon", "vampire", "criminal", "predator", "saboteur"],
@@ -66,25 +53,26 @@ MAX_NEW_TOKENS = 256
 GEN_BATCH = 16
 
 
-# ---------------------------------------------------------------- generation
+# load the questions to ask for each run
 def load_questions(n: int) -> list[str]:
     qs = [json.loads(l)["question"] for l in QUESTIONS_FILE.read_text().splitlines() if l.strip()]
     return qs[:n]
 
-
+# instructions for each run
 def role_instructions(role: str, n_system: int) -> list[str]:
     if role == "default":
         return [""]
     data = json.loads((ROLES_DIR / f"{role}.json").read_text())
     return [i["pos"] for i in data["instruction"]][:n_system]
 
-
+# actually create a conversation
 def generate_conversations(pm, roles, questions, n_system):
-    """Greedy-generate one response per (role, system_variant, question); return
-    {role: [conversation,...]} where each conversation is a chat-message list."""
     tok = pm.tokenizer
     convs = {r: [] for r in roles}
+
+    # go through roles
     for role in roles:
+        # get instructions and quetions questions
         items = [(s, q) for s in role_instructions(role, n_system) for q in questions]
         for i in range(0, len(items), GEN_BATCH):
             batch = items[i:i + GEN_BATCH]
@@ -106,28 +94,24 @@ def generate_conversations(pm, roles, questions, n_system):
     return convs
 
 
-# ---------------------------------------------------------------- extraction
+# extract from the residual stream activations
 def extract_role_vector(extractor, encoder, span_mapper, conversations, batch_size=16):
-    """Mean-over-assistant-tokens layer-LAYER vector, meaned over a role's probes.
-    Mirrors assistant_axis pipeline/2_activations.py exactly (so it matches the cloud)."""
     vecs = []
     for i in range(0, len(conversations), batch_size):
         batch = conversations[i:i + batch_size]
         acts, meta = extractor.batch_conversations(batch, layer=[LAYER], max_length=2048)
         _, spans, _smeta = encoder.build_batch_turn_spans(batch)
-        per_conv = span_mapper.map_spans(acts, spans, meta)   # list of (n_turns, n_layers, hidden)
+        per_conv = span_mapper.map_spans(acts, spans, meta)   
         for conv_acts in per_conv:
             if conv_acts.numel() == 0:
                 continue
-            assistant = conv_acts[1::2]                       # assistant turns
+            assistant = conv_acts[1::2]
             if assistant.shape[0] > 0:
-                vecs.append(assistant.mean(dim=0)[0].float().cpu())   # (hidden,) — single layer
+                vecs.append(assistant.mean(dim=0)[0].float().cpu())
     return torch.stack(vecs).mean(dim=0)
 
-
+# project out of the subspace that we give it in some layers
 def ablation_ctx(model, Q_cols, layers):
-    """ActivationSteering that projects out the given orthonormal columns at `layers`.
-    Q_cols: list of (hidden,) tensors (orthonormal). coeff=0 => pure projection-out."""
     if not Q_cols:
         return nullcontext()
     dev = model.device
@@ -136,8 +120,7 @@ def ablation_ctx(model, Q_cols, layers):
     return ActivationSteering(model, steering_vectors=vecs, coefficients=[0.0] * len(vecs),
                               layer_indices=layer_idx, intervention_type="ablation", positions="all")
 
-
-# ---------------------------------------------------------------- main
+# main runner
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n_questions", type=int, default=8)
@@ -184,7 +167,7 @@ def main():
     print(f"  generating probes for {len(subset)} roles ...", flush=True)
     convs = generate_conversations(pm, subset, questions, args.n_system_prompts)
 
-    rows = []   # (condition, family, k, role, group, pc1, pc2)
+    rows = []
 
     def run_condition(condition, family, k, Q_cols):
         with ablation_ctx(pm.model, Q_cols, layers):
@@ -194,9 +177,9 @@ def main():
                 rows.append((condition, family, k, role, role_group[role], p1, p2))
         print(f"  [{condition}] done", flush=True)
 
-    # baseline (no ablation)
+    # baseline (no abliteration)
     run_condition("baseline", "baseline", 0, [])
-    # concept sweeps
+    # concept sweeps. sweep with several values of k (how many of the top-k vectors we are keeping)
     for c in CONCEPTS:
         U = subspaces[c]
         for k in ks:
@@ -204,13 +187,14 @@ def main():
                 continue
             cols = [U[:, i].clone() for i in range(k)]
             run_condition(f"{c}_k{k}", c, k, cols)
-    # matched random controls (seed-matched per k)
+    # random controls
     for k in ks:
         g = torch.Generator().manual_seed(1000 + k)
         Qr, _ = torch.linalg.qr(torch.randn(HIDDEN, k, generator=g))
         cols = [Qr[:, i].clone() for i in range(k)]
         run_condition(f"random_k{k}", "random", k, cols)
 
+    #save results
     out_dir = RUNS_DIR / args.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "positions.csv", "w", newline="") as f:
