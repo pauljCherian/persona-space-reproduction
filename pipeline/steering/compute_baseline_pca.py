@@ -1,34 +1,5 @@
 #!/usr/bin/env python3
-"""Compute baseline PC1/2/3 of the role-only matrix per model.
-
-Source of role-vectors: the prior project's baseline at
-  data/baseline/<tag>/vectors/*.pt   (mean-over-assistant-token extraction)
-
-We use the prior baseline for the PCA basis specifically because PC1 there
-aligns more closely with the default-vs-role direction (cos ≈ 0.82 for llama8b,
-vs ~0.60 when computed on our HF α=0 cloud). PC1 in this basis is essentially
-the Assistant Axis, which is the natural visualization frame for steered-
-trajectory plots.
-
-The PCA basis is *only* used for VISUALIZATION coordinates. Steering-
-displacement vectors (steered_α≠0 − steered_α=0) are computed in raw
-4096-dim activation space and are extraction-independent — so the basis
-choice doesn't affect any scientific claim, only how things look in 2D plots.
-
-Sign-aligns PC1 with the default-vs-role direction (Lu axis convention).
-PC2 / PC3 signs are arbitrary.
-
-Output:
-  data/steering/pca_basis/<tag>_basis.pt = dict with:
-    role_mean: ndarray (hidden_dim,)
-    pc1, pc2, pc3: ndarrays (hidden_dim,)
-    var_frac_top3: tuple of 3 floats
-    cum_var_top3: float
-    cos_pc1_lu: float (cosine of PC1 with default-vs-role direction)
-    n_roles_used: int (=275, default excluded)
-    hidden_dim: int
-    source: str (which dir the role vectors came from — for provenance)
-"""
+#Compute PC1/2/3 of the role matrix for each model. This is exactly what they do in the assistant axis paper.
 import sys
 from pathlib import Path
 
@@ -39,24 +10,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _common import MODELS, load_baseline_role_matrix, load_baseline_default, pca_basis_path
 
-
+#
 def compute_one(tag: str):
+    # get the matrix and the roles
     X, roles = load_baseline_role_matrix(tag)
+    #get the defeault
     default = load_baseline_default(tag)
+
+    # det all the non default
     non_default = np.array([r != "default" for r in roles])
+
+    # don't include the deafult assistant
     X_roles = X[non_default]
+    
+    #get the mean and then center, and do SVD on the mean centered matrix to get PC1,2,3
     role_mean = X_roles.mean(axis=0)
     centered = X_roles - role_mean
     _, S, Vt = np.linalg.svd(centered, full_matrices=False)
     pc1, pc2, pc3 = Vt[0], Vt[1], Vt[2]
-    # Sign-align PC1 with Lu axis (default − mean_roles)
+
+    # Compute the assistant axis with average like Christina lu does. Figure out which direction to have pc1 point in 
     lu_axis_raw = default - role_mean
     if pc1 @ lu_axis_raw < 0:
         pc1 = -pc1
+
+    #compare assistanat axis average with pc1
     var_frac = (S ** 2) / (S ** 2).sum()
     lu_unit = lu_axis_raw / (np.linalg.norm(lu_axis_raw) + 1e-12)
     cos_pc1_lu = float(pc1 @ lu_unit)
 
+    # output dictionary to write to disc
     out = {
         "role_mean": role_mean.astype(np.float32),
         "pc1": pc1.astype(np.float32),
@@ -69,6 +52,8 @@ def compute_one(tag: str):
         "hidden_dim": int(X.shape[1]),
         "source": f"data/baseline/{tag}/vectors  (prior project, mean-over-assistant-token extraction)",
     }
+
+    # write it to disc
     path = pca_basis_path(tag)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(out, path)
