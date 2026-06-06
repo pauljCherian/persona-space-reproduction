@@ -1,17 +1,24 @@
 #!/bin/bash
-# Extract per-role activation vectors for one model via the assistant-axis
-# pipeline. NO judge step (filter rate ~100% for these instruct models).
-#
-# Usage:   PHASE_H_DATA_ROOT=<out_root> ./pipeline.sh <model_tag>
+#main pipeline for running to extract per-role activation vectors for one model via the assistant-axis pipeline.
+#we do not do the judge step since it is too expensive for this project
+
+#Usage:   PHASE_H_DATA_ROOT=<out_root> ./pipeline.sh <model_tag>
 #   <model_tag> is a key in _common.py's MODELS dict.
 #   Output goes to $PHASE_H_DATA_ROOT/<MODELS[tag]['path']>/.
 #
-# Steps:
-#   1. vLLM generation: 276 roles × (prompt variants × 240 questions) → responses/<role>.jsonl
-#   2. Activation extraction at layer L (mean over assistant tokens) → activations/<role>.pt
-#   3. Unfiltered role vectors (mean over rollouts) → vectors/<role>.pt
-#   4. Lu-style assistant axis (default − mean(roles)) → axis.pt
-#   5. Default activation vector → default.pt
+
+#Pipeline steps
+#   1. LLM generation: 276 roles × (prompt variants × 240 questions) -> responses/<role>.jsonl
+        # These are the rollouts
+#   2. Activation extraction at layer L (mean over assistant tokens) -> activations/<role>.pt
+        # These are the activations from the residual stream activations
+#   3. Unfiltered role vectors (mean over rollouts) -> vectors/<role>.pt
+        # NOTE: we do NOT filter like the paper does. We keep all 100% of them
+#   4. Lu-style assistant axis (default − mean(roles)) -> axis.pt
+        # Christina also just calculates the avg of all roles to the assistant. and says this is pretty close to PC1
+#   5. Default activation vector -> default.pt
+        # for the default assistant
+
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
@@ -22,7 +29,7 @@ fi
 TAG="$1"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.9}"   # vLLM fraction of GPU memory (lower on shared cards)
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.9}"
 
 read MODEL_ID OUTPUT LAYER HIDDEN_DIM <<<"$(
     cd "$REPO_ROOT" && "$PYTHON" -c "
@@ -36,18 +43,21 @@ print(m['model_id'], model_dir(tag), m['layer'], m['hidden_dim'])
 "
 )"
 
-# Locate the assistant-axis library (pip-installed editable from third_party/assistant_axis).
+#get the directories with the data that we need to run the pipeline. save as macros
 PIPELINE_DIR="$("$PYTHON" -c 'import os, assistant_axis; print(os.path.dirname(os.path.dirname(assistant_axis.__file__)) + "/pipeline")')"
 ROLES_DIR="$("$PYTHON" -c 'import os, assistant_axis; print(os.path.dirname(os.path.dirname(assistant_axis.__file__)) + "/data/roles/instructions")')"
 QUESTIONS_FILE="$("$PYTHON" -c 'import os, assistant_axis; print(os.path.dirname(os.path.dirname(assistant_axis.__file__)) + "/data/extraction_questions.jsonl")')"
 
+#make an output dir
 mkdir -p "$OUTPUT"
 
+#start the pipeline
 echo "=== Pipeline: tag=$TAG ==="
 echo "  model_id:   $MODEL_ID"
 echo "  output:     $OUTPUT"
 echo "  layer:      $LAYER   hidden_dim: $HIDDEN_DIM"
 
+#begin generating rollouts
 echo "=== Step 1/5: Generate responses (vLLM) ==="
 "$PYTHON" "$PIPELINE_DIR/1_generate.py" \
     --model "$MODEL_ID" \
@@ -59,6 +69,7 @@ echo "=== Step 1/5: Generate responses (vLLM) ==="
     --tensor_parallel_size 1 \
     --gpu_memory_utilization "$GPU_MEM_UTIL"
 
+#get the activations from the residual stream
 echo "=== Step 2/5: Extract activations at layer $LAYER ==="
 "$PYTHON" "$PIPELINE_DIR/2_activations.py" \
     --model "$MODEL_ID" \
@@ -67,6 +78,7 @@ echo "=== Step 2/5: Extract activations at layer $LAYER ==="
     --layers "$LAYER" \
     --batch_size 32
 
+#get the unfiltered role vectors by averaging the activations
 echo "=== Step 3/5: Compute unfiltered role vectors (no judge) ==="
 "$PYTHON" - "$OUTPUT/activations" "$OUTPUT/vectors" <<'PYEOF'
 import sys
@@ -86,6 +98,7 @@ for af in sorted(act_dir.glob("*.pt")):
 print(f"Wrote {n} unfiltered role vectors → {out_dir}")
 PYEOF
 
+#compute the default assistant axis (difference between assistant and avg)
 echo "=== Step 4/5: Compute Lu-style assistant axis ==="
 "$PYTHON" - "$OUTPUT/vectors" "$OUTPUT/axis.pt" <<'PYEOF'
 import sys
@@ -110,6 +123,7 @@ torch.save(axis, out_path)
 print(f"Wrote axis {tuple(axis.shape)}, norm={axis.norm().item():.4f}, n_roles={len(role_vecs)} → {out_path}")
 PYEOF
 
+#save the vector
 echo "=== Step 5/5: Save default activation vector ==="
 "$PYTHON" - "$OUTPUT/activations/default.pt" "$OUTPUT/default.pt" <<'PYEOF'
 import sys
