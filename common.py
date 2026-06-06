@@ -8,8 +8,10 @@ import torch
 
 #how we laod a pt file into a numpy array. check if its a dictionary or not and resolve differently
 def load_pt(path: Path | str) -> np.ndarray:
-    """Load a single activation vector as a 1-D float32 ndarray."""
     obj = torch.load(path, map_location="cpu", weights_only=False)
+    #the object is either a raw tensor or a dict wrapping the tensor
+    #have get priority because we used to store as mean before vector, or without label
+    #all will just get the role vector from a pt file dimension (d,)
     if isinstance(obj, dict):
         obj = obj.get("vector", obj.get("mean", next(iter(obj.values()))))
     #return the object as a numpy array 
