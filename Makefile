@@ -1,12 +1,10 @@
-# Rebuild the 6 poster figures from committed data (CPU, seconds):
-#   make poster PYTHON=/path/to/venv/bin/python   # render into gallery/
-#   make clean                                     # remove intermediate PNGs
-# GPU data regeneration is driven manually from pipeline/.
+#file to make the 6 poster figures from committed data
+#make poster PYTHON=/path/to/venv/bin/python   
+#make clean                                    
 
 PYTHON ?= python
 export MPLBACKEND := Agg
 
-# Rendered into figures/ then copied to gallery/ ; vs rendered straight to gallery/.
 FIG_TO_GALLERY := figure_1_pc1_replicable steering_flow abliteration_flow figure_3_steering_trajectory
 GALLERY_DIRECT := assistant_axis_simple evil_structure_only beauty_panel
 
