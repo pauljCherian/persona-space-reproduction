@@ -1,21 +1,7 @@
 #!/usr/bin/env python3
-"""Build a CONCEPT SUBSPACE to abliterate, for evil / humor / mysticism.
+#build a CONCEPT SUBSPACE to abliterate, for evil / humor / mysticism. We do this over word-concept vectors that we have already extracted
+# For a set of concept vectors, we normalize them, put them into a matrix, calaculate their orthonormal basis, and then figure out which ones represent most of the variance
 
-NO GPU.  Pure linear algebra over already-extracted per-word concept vectors.
-
-For each concept we take a set of synonym words that ALREADY have a layer-16
-"vector_at_canonical_layer" on disk (built earlier by pipeline/steering/build_vectors.py,
-the persona_vectors contrastive convention — same layer/pooling as the 275-role cloud),
-unit-normalise them, stack them as columns, and SVD.  The left singular vectors U
-give an ORTHONORMAL, importance-ORDERED basis of the concept's representational
-subspace, so an abliteration sweep just projects out the top-k columns U[:, :k].
-
-  data/abliteration_concept/directions/{concept}_concept_subspace.pt
-      {"U": (hidden_dim, n) float32 orthonormal, "svals": (n,), "names": [...], "concept": str}
-
-The synonym vectors live in the steering-persona-space project (build-time only); the
-saved .pt files are self-contained for the run/figure steps.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,7 +14,7 @@ TRAIT_DIR = SPS / "data" / "vectors_steering" / "llama8b"          # evil.pt, hu
 SYN_DIR = SPS / "data" / "vectors_steering_synonyms" / "llama8b"   # malevolent.pt, witty.pt, mystical.pt, ...
 OUT_DIR = ROOT / "data" / "abliteration_concept" / "directions"
 
-# Synonym words per concept — only words with a pre-built vector on disk (verified).
+# Synonym words for each concept subspace we want to build.
 SYNONYMS = {
     "evil":      ["evil", "malevolent", "wicked", "cruel", "sadistic", "ruthless",
                   "corrupt", "hateful", "immoral", "treacherous", "demonic", "sinful"],
@@ -38,9 +24,8 @@ SYNONYMS = {
                   "divine", "devotional", "shamanic", "ascetic"],
 }
 
-
+# load the concept vector for a word, extracted at layer 16
 def load_word_vector(name: str) -> torch.Tensor:
-    """Layer-16 concept vector for one word; evil/humorous live in TRAIT_DIR, rest in SYN_DIR."""
     for d in (SYN_DIR, TRAIT_DIR):
         p = d / f"{name}.pt"
         if p.exists():
@@ -49,18 +34,20 @@ def load_word_vector(name: str) -> torch.Tensor:
             return v.float().flatten()
     raise FileNotFoundError(f"no pre-built vector for {name!r} in {SYN_DIR} or {TRAIT_DIR}")
 
-
+# build a subspace by stacking several word concept vectors into a matrix, them doing SVD on them to get the orthonormal basis
+# with the most important vectors spannign that basis sorted
 def build_subspace(concept: str) -> dict:
     names = SYNONYMS[concept]
     cols = [(v := load_word_vector(n)) / v.norm() for n in names]  # equal weight per synonym
-    M = torch.stack(cols, dim=1).double()               # (hidden_dim, n)
-    U, S, _ = torch.linalg.svd(M, full_matrices=False)  # U: (hidden_dim, n), ordered by S
+    M = torch.stack(cols, dim=1).double()               
+    U, S, _ = torch.linalg.svd(M, full_matrices=False)
     return {"U": U.float(), "svals": S.float(), "names": names, "concept": concept}
 
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for concept in ("evil", "humor", "mysticism"):
+        # build the subspace (just doing SVD)
         payload = build_subspace(concept)
         out = OUT_DIR / f"{concept}_concept_subspace.pt"
         torch.save(payload, out)
