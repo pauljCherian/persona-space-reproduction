@@ -1,22 +1,8 @@
 #!/usr/bin/env python3
-"""Run the Lu protocol on a steered model: for one (tag, vector_name, alpha) condition,
-generate responses for 275 roles × 5 prompt variants × N questions with the steering
-hook active, then extract activations at layer L (also under steering) and save role-
-vec dicts compatible with the prior project's downstream tooling.
+# Run the assistant axis pipeline on a steered model.
+#Usage:
+# python run_steered.py <tag> <vector_name> <alpha> [--n_questions 32] [--batch_size 16]
 
-Outputs:
-  data/steered/<tag>/<vector_name>/alpha_<a>/responses/<role>.jsonl
-  data/steered/<tag>/<vector_name>/alpha_<a>/activations/<role>.pt
-  data/steered/<tag>/<vector_name>/alpha_<a>/vectors/<role>.pt   (mean over rollouts)
-  data/steered/<tag>/<vector_name>/alpha_<a>/default.pt          (= vectors/default.pt)
-
-Usage:
-  python run_steered.py <tag> <vector_name> <alpha> [--n_questions 32] [--batch_size 16]
-
-The steering vector is applied at MODELS[tag]['layer'] via assistant_axis.ActivationSteering
-with addition / positions="all".  Both response generation AND activation extraction run
-under the same hook, so the saved persona space reflects the steered model end-to-end.
-"""
 import argparse
 import json
 import sys
@@ -32,7 +18,7 @@ from _common import MODELS, steered_dir, trait_vector_path, control_vector_path
 import assistant_axis as _aa
 from assistant_axis import ActivationSteering
 
-# Role instructions + extraction questions ship with the assistant_axis submodule.
+#Get the role instructions + extraction questions that the assistant axis repo provides
 _AA_DATA = Path(_aa.__file__).resolve().parent.parent / "data"
 ROLES_DIR = _AA_DATA / "roles" / "instructions"
 QUESTIONS_FILE = _AA_DATA / "extraction_questions.jsonl"
@@ -40,32 +26,28 @@ MAX_NEW_TOKENS = 256
 DEFAULT_N_QUESTIONS = 32
 DEFAULT_BATCH_SIZE = 16
 
-
+# get a steering vector that we have created
 def load_steering_vector(tag: str, vector_name: str) -> torch.Tensor:
-    """Return the 1D steering vector (hidden_dim,) at canonical layer L.
-    Sources (in order of check):
-      1. role_<name>  → data/vectors_steering/<tag>/role/<name>.pt   (Method A or B role-targets)
-      2. trait name (evil/sycophantic/hallucinating/humorous)         → trait_vector_path
-      3. anything else → control_vector_path (random_unit_*, partition_anchor_*)
-    """
+    # check if we have a role vector
     if vector_name.startswith("role_"):
         role_name = vector_name[len("role_"):]
         role_dir = Path(__file__).resolve().parents[1] / "data" / "vectors_steering" / tag / "role"
         d = torch.load(role_dir / f"{role_name}.pt", map_location="cpu", weights_only=False)
         return d["vector"].float()
+    # check if it is canonical
     if vector_name in {"evil", "sycophantic", "hallucinating", "humorous"}:
         d = torch.load(trait_vector_path(tag, vector_name), map_location="cpu", weights_only=False)
         return d["vector_at_canonical_layer"].float()
-    # control: stored as {'vector': tensor, ...}
+    # otherwise it might not be wrapped in anything
     d = torch.load(control_vector_path(tag, vector_name), map_location="cpu", weights_only=False)
     return d["vector"].float()
 
-
+# load the questions we need to ask the role playing model
 def load_questions(n: int) -> list[dict]:
     qs = [json.loads(l) for l in QUESTIONS_FILE.read_text().splitlines() if l.strip()]
     return qs[:n]
 
-
+# build a chat prompt to use
 def build_chat_text(tokenizer, system: str, user: str) -> str:
     if system:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -73,18 +55,8 @@ def build_chat_text(tokenizer, system: str, user: str) -> str:
         messages = [{"role": "user", "content": user}]
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-
+# make a forward pass through full (system + user + assistant response), then return hidden state at the last token of the reponse
 def get_activation_for_response(model, tokenizer, layer_module, system: str, user: str, response: str):
-    """Forward pass through full (system + user + assistant response) sequence; return
-    last-token hidden state at the OUTPUT of layer_module (post any forward_hook chain,
-    INCLUDING the ActivationSteering hook). Matches the prior project's
-    ActivationExtractor convention (forward_hook on layer module captures post-hook output).
-
-    NOTE: this MUST not read `outputs.hidden_states[L]` — modern HF transformers'
-    @check_model_inputs decorator monkey-patches forward and captures BEFORE register_forward_hook
-    fires, so hidden_states[L+1] is pre-hook output of layer L (not the steered value).
-    Forward-hook capture sees post-hook output.
-    """
     if system:
         messages = [
             {"role": "system", "content": system},
@@ -108,26 +80,34 @@ def get_activation_for_response(model, tokenizer, layer_module, system: str, use
     finally:
         h_handle.remove()
     h = captured["o"][:, -1, :].squeeze(0).to(torch.bfloat16).cpu()
-    return h.unsqueeze(0)   # match prior format: (1, hidden_dim)
+    return h.unsqueeze(0)
 
-
+# go through and ask the questions and generate the respones and get the activations
 def process_role(role_file: Path, model, tokenizer, layer_module,
                  questions: list[dict], out_resp: Path, out_act: Path,
                  out_vec: Path, batch_size: int):
+
+    # the name of the role we are generating for
     role = role_file.stem
     if out_resp.exists() and out_act.exists() and out_vec.exists():
         print(f"  [{role}] already complete, skipping")
         return
+
+    # get the information about the roel
     role_data = json.loads(role_file.read_text())
+
+    # get the instructors for that role
     instructions = [i["pos"] for i in role_data["instruction"]]
     if role == "default":
         instructions = [""]   # default has empty system prompt
     # build full prompt list (prompt_idx, q_idx, system, user)
     items = []
+
+    # create a list of tules that have all the information needed for role instructions and role questions
     for p_idx, instr in enumerate(instructions):
         for q_idx, q in enumerate(questions):
             items.append((p_idx, q_idx, instr, q["question"]))
-    # Generate responses in batches
+    # Generate responses in batched format
     responses = []
     for i in range(0, len(items), batch_size):
         batch = items[i:i+batch_size]
@@ -139,7 +119,7 @@ def process_role(role_file: Path, model, tokenizer, layer_module,
         for j in range(len(batch)):
             r = tokenizer.decode(out[j, inputs.input_ids.shape[1]:], skip_special_tokens=True)
             responses.append(r)
-    # Write responses JSONL + extract activations
+    # Write responses and extract activations
     resp_records = []
     act_dict = {}
     for (p_idx, q_idx, instr, user_q), resp in zip(items, responses):
@@ -156,7 +136,7 @@ def process_role(role_file: Path, model, tokenizer, layer_module,
         })
         act = get_activation_for_response(model, tokenizer, layer_module, instr, user_q, resp)
         act_dict[f"pos_p{p_idx}_q{q_idx}"] = act
-    # Save
+    # save the responses and teh activations
     out_resp.parent.mkdir(parents=True, exist_ok=True)
     out_act.parent.mkdir(parents=True, exist_ok=True)
     out_vec.parent.mkdir(parents=True, exist_ok=True)
@@ -164,13 +144,14 @@ def process_role(role_file: Path, model, tokenizer, layer_module,
         for r in resp_records:
             f.write(json.dumps(r) + "\n")
     torch.save(act_dict, out_act)
-    # Mean role-vec
+    # Take an average of the activations and save that
     stacked = torch.stack([v.squeeze(0) for v in act_dict.values()])  # (n_rollouts, hidden_dim)
     mean_vec = stacked.float().mean(dim=0)
     torch.save({"vector": mean_vec, "type": "mean", "role": role}, out_vec)
     print(f"  [{role}] {len(resp_records)} rollouts, ||mean||={mean_vec.norm().item():.3f}", flush=True)
 
 
+# main loop to run everything
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("tag", choices=list(MODELS))
@@ -199,22 +180,29 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(info["model_id"])
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.padding_side = "left"   # required for batched generate
+    tokenizer.padding_side = "left"  
+
+    #get the model
     model = AutoModelForCausalLM.from_pretrained(
         info["model_id"], torch_dtype=torch.bfloat16, device_map="auto",
     )
+
+    # put into inference mode
     model.eval()
 
+    # load the questions
     questions = load_questions(args.n_questions)
     role_files = sorted(ROLES_DIR.glob("*.json"))
     if args.max_roles > 0:
         role_files = role_files[:args.max_roles]
         print(f"  SMOKE TEST: capping to {args.max_roles} roles", flush=True)
-    # ensure "default" is present (it isn't in ROLES_DIR; default uses empty system)
     print(f"  {len(role_files)} role files; will also process 'default' (empty system).", flush=True)
 
+    # put the model on our gpu
     v_device = v.to(model.device).to(torch.bfloat16)
     layer_module = model.model.layers[info["layer"]]
+
+    #use the activation steering part of the assistant axis repo
     with ActivationSteering(
         model,
         steering_vectors=[v_device],
@@ -224,7 +212,7 @@ def main():
         positions="all",
     ):
         t0 = time.time()
-        # Real roles
+        # process roles and time them
         for i, rf in enumerate(role_files):
             t = time.time()
             process_role(
@@ -238,8 +226,6 @@ def main():
             total = time.time() - t0
             eta = total / (i + 1) * (len(role_files) + 1 - (i + 1))
             print(f"  [{i+1}/{len(role_files)+1}] {rf.stem}: {elapsed:.1f}s  (ETA {eta/60:.1f} min)", flush=True)
-        # Default role (empty system)
-        # Write a fake role file for default — easier than special-casing process_role
         default_role_data = {"instruction": [{"pos": ""}]}
         tmp_default = out_dir / "_default_role.json"
         tmp_default.write_text(json.dumps(default_role_data))
@@ -251,7 +237,6 @@ def main():
             args.batch_size,
         )
         tmp_default.unlink()
-        # Also save default.pt at top of out_dir (matches prior layout)
         import shutil
         shutil.copyfile(out_dir / "vectors" / "default.pt", out_dir / "default.pt")
         print(f"  TOTAL: {(time.time()-t0)/60:.1f} min", flush=True)
